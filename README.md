@@ -1,1 +1,1 @@
-## A Go service extracting software packages knowledge from documentations and open source communities.
+## A Go service for extracting software packages' knowledge from documentations and open source communities.
