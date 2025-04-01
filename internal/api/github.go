@@ -2,10 +2,13 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/CodexVeritax/extractum/pkg/model"
@@ -172,4 +175,113 @@ func (c *Client) FetchPullRequests(ctx context.Context, owner, repo string, opti
 	}
 
 	return allPRs, nil
+}
+
+// FetchIssueComments fetches comments for an issue
+func (c *Client) FetchIssueComments(ctx context.Context, owner, repo string, issueNumber int) ([]model.Comment, error) {
+	endpoint := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, issueNumber)
+
+	var allComments []model.Comment
+	page := 1
+	perPage := 100
+
+	for {
+		params := url.Values{}
+		params.Set("page", fmt.Sprintf("%d", page))
+		params.Set("per_page", fmt.Sprintf("%d", perPage))
+
+		var comments []model.Comment
+		if err := c.get(ctx, endpoint, params, &comments); err != nil {
+			return nil, fmt.Errorf("failed to fetch comments: %w", err)
+		}
+
+		if len(comments) == 0 {
+			break
+		}
+
+		allComments = append(allComments, comments...)
+
+		if len(comments) < perPage {
+			break
+		}
+
+		page++
+	}
+
+	return allComments, nil
+}
+
+func (c *Client) get(ctx context.Context, endpoint string, params url.Values, result interface{}) error {
+	apiURL := c.baseURL + endpoint
+
+	if params != nil {
+		apiURL += "?" + params.Encode()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	req.Header.Set("User-Agent", c.userAgent)
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	if c.rateLimitRemaining < 5 && time.Now().Before(c.rateLimitReset) {
+		waitTime := time.Until(c.rateLimitReset) + time.Second
+		fmt.Printf("Rate limit almost exceeded , Waiting for %v\n", waitTime)
+
+		select {
+		case <-time.After(waitTime):
+
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	resp, err := c.httpClient.Do(req)
+
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if remaining := resp.Header.Get("X-RateLimit-Remaining"); remaining != "" {
+		c.rateLimitRemaining, _ = strconv.Atoi(remaining)
+	}
+
+	if reset := resp.Header.Get("X-RateLimit-Reset"); reset != "" {
+		resetTime, _ := strconv.ParseInt(reset, 10, 64)
+		c.rateLimitReset = time.Unix(resetTime, 0)
+	}
+
+	if resp.StatusCode == http.StatusForbidden && c.rateLimitRemaining == 0 {
+		waitTime := time.Until(c.rateLimitReset) + time.Second
+
+		fmt.Printf("Rate limit exceeded . Waiting for %v\n", waitTime)
+
+		select {
+		case <-time.After(waitTime):
+			return c.get(ctx, endpoint, params, result)
+
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("Github API failed: %d - %s", resp.StatusCode, string(body))
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
+		return fmt.Errorf("failed to parse the respose: %w", err)
+	}
+
+	return nil
+
 }
