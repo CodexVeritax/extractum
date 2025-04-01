@@ -32,6 +32,9 @@ type Issue struct {
 	// Parsed data
 	CodeBlocks    []CodeBlock `json:"code_blocks,omitempty"`
 	ErrorMessages []string    `json:"error_messages,omitempty"`
+
+	// Pull Request data
+	PullRequest *map[string]interface{} `json:"pull_request,omitempty"`
 }
 
 // PullRequest represents a GitHub pull request
